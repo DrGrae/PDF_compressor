@@ -1,0 +1,5 @@
+streamlit
+Pillow
+reportlab
+pillow-heif
+pypdf
