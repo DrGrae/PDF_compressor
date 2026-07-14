@@ -1,5 +1,6 @@
 """Streamlit front-end for converting images to compressed PDFs."""
 import io
+import zipfile
 from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
 
@@ -264,6 +265,14 @@ def convert_files(uploaded_files: Iterable, merge_mode: bool, prefix: str):
     return sanitized_prefix, results, errors
 
 
+def build_zip_bytes(conversions: List[dict]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for item in conversions:
+            zf.writestr(item["name"], item["bytes"])
+    return buffer.getvalue()
+
+
 st.set_page_config(page_title="Image → PDF Compressor", page_icon="🧾")
 st.title("Image → PDF Compressor")
 st.write(
@@ -287,48 +296,72 @@ convert_clicked = st.button("Convert to PDF")
 if convert_clicked:
     if not uploaded_files:
         st.error("Please upload at least one file.")
+        st.session_state.pop("conversion_result", None)
     else:
         try:
             prefix_used, conversions, issues = convert_files(uploaded_files, merge_mode, prefix_input)
         except RuntimeError as exc:
             st.error(f"Compression failed: {exc}")
+            st.session_state.pop("conversion_result", None)
         except Exception as exc:
             st.error(f"Unable to process the uploaded files: {exc}")
+            st.session_state.pop("conversion_result", None)
         else:
-            if conversions:
-                st.success(
-                    f"Created {len(conversions)} PDF file{'s' if len(conversions) != 1 else ''}."
-                )
-                if prefix_used != sanitize_component(prefix_input, "PDF"):
-                    st.info(
-                        f"The prefix was normalised to `{prefix_used}` for filenames."
-                    )
-                for item in conversions:
-                    size_kb = len(item["bytes"]) / 1024.0
-                    metrics = [f"{size_kb:.1f} KB"]
-                    if item.get("quality") is not None:
-                        metrics.append(f"quality {item['quality']}")
-                    if item.get("long_edge") is not None:
-                        metrics.append(f"long edge {item['long_edge']} px")
-                    description = (
-                        f"{', '.join(item['source_names'])} → **{item['name']}** "
-                        f"({', '.join(metrics)})"
-                    )
-                    st.markdown(description)
-                    st.download_button(
-                        label=f"Download {item['name']}",
-                        data=item["bytes"],
-                        file_name=item["name"],
-                        mime="application/pdf",
-                        key=f"download-{item['name']}"
-                    )
-            else:
-                st.warning("No files were converted. Check the warnings below for details.")
+            st.session_state["conversion_result"] = {
+                "prefix_used": prefix_used,
+                "prefix_input": prefix_input,
+                "conversions": conversions,
+                "issues": issues,
+            }
 
-            if issues:
-                st.warning(
-                    "Some files could not be processed:\n" + "\n".join(f"- {msg}" for msg in issues)
-                )
+result = st.session_state.get("conversion_result")
+if result:
+    prefix_used = result["prefix_used"]
+    conversions = result["conversions"]
+    issues = result["issues"]
+
+    if conversions:
+        st.success(
+            f"Created {len(conversions)} PDF file{'s' if len(conversions) != 1 else ''}."
+        )
+        if prefix_used != sanitize_component(result["prefix_input"], "PDF"):
+            st.info(f"The prefix was normalised to `{prefix_used}` for filenames.")
+
+        if len(conversions) > 1:
+            st.download_button(
+                label=f"Download all {len(conversions)} as ZIP",
+                data=build_zip_bytes(conversions),
+                file_name=f"{prefix_used}_all.zip",
+                mime="application/zip",
+                key="download-all-zip",
+            )
+
+        for item in conversions:
+            size_kb = len(item["bytes"]) / 1024.0
+            metrics = [f"{size_kb:.1f} KB"]
+            if item.get("quality") is not None:
+                metrics.append(f"quality {item['quality']}")
+            if item.get("long_edge") is not None:
+                metrics.append(f"long edge {item['long_edge']} px")
+            description = (
+                f"{', '.join(item['source_names'])} → **{item['name']}** "
+                f"({', '.join(metrics)})"
+            )
+            st.markdown(description)
+            st.download_button(
+                label=f"Download {item['name']}",
+                data=item["bytes"],
+                file_name=item["name"],
+                mime="application/pdf",
+                key=f"download-{item['name']}"
+            )
+    else:
+        st.warning("No files were converted. Check the warnings below for details.")
+
+    if issues:
+        st.warning(
+            "Some files could not be processed:\n" + "\n".join(f"- {msg}" for msg in issues)
+        )
 
 st.caption(
     "This tool uses the same compression pipeline as the original CLI script, with JPEG quality "
